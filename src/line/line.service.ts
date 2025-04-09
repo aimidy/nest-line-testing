@@ -1,6 +1,8 @@
 import * as line from '@line/bot-sdk';
 import { Injectable } from '@nestjs/common';
 import axios from 'axios';
+import * as fs from 'fs';
+import * as path from 'path';
 
 @Injectable()
 export class LineService {
@@ -23,8 +25,6 @@ export class LineService {
 
   async handleWebhookEvent(event: line.WebhookEvent) {
     console.log('Received event:', event.type);
-
-    console.log(event.type);
     switch (event.type) {
       case 'message':
         await this.handleMessageEvent(event);
@@ -41,34 +41,101 @@ export class LineService {
   }
 
   async handleMessageEvent(event: line.MessageEvent) {
-    console.log(12346);
-    const replyToken = event.replyToken;
     const message = event.message;
 
     console.log('Received message:', message);
 
-    if (message.type === 'text') {
-      const replyMessage = {
-        type: 'text',
-        text: `You said: ${message.text}`,
-      };
+    switch (message.type) {
+      case 'text':
+        this.handleTextMessage(event);
+        break;
+      case 'image':
+        this.handleMediaMessage(event);
+        break;
+      case 'video':
+        console.log('Video message:', message.id);
+        break;
+      case 'audio':
+        console.log('Audio message:', message.id);
+        break;
+      case 'location':
+        console.log('Location message:', message.title, message.address);
+        break;
+      case 'sticker':
+        console.log('Sticker message:', message.packageId, message.stickerId);
+        break;
+      default:
+        console.warn('Unhandled message type:', message.type);
+    }
+  }
 
-      const result = await axios.post(
-        'https://api.line.me/v2/bot/message/reply',
-        {
-          replyToken: replyToken,
-          messages: [replyMessage],
+  async handleTextMessage(event: line.MessageEvent) {
+    const replyToken = event.replyToken;
+    const message = event.message;
+
+    console.log('Received text message:', message);
+
+    const replyMessage = {
+      type: 'text',
+      text: `You said: ${message}`,
+    };
+
+    const result = await axios.post(
+      'https://api.line.me/v2/bot/message/reply',
+      {
+        replyToken: replyToken,
+        messages: [replyMessage],
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.channelAccessToken}`,
         },
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${this.channelAccessToken}`,
-          },
+      },
+    );
+    console.log('Reply result:', result.data);
+  }
+
+  async handleMediaMessage(event: line.MessageEvent) {
+    const type = event.message.type;
+    const messageId = event.message.id;
+
+    const ext = {
+      image: 'jpg',
+      video: 'mp4',
+      audio: 'm4a',
+    }[type];
+
+    if (!ext) {
+      console.warn('Unsupported media type:', type);
+      return;
+    }
+    const fileName = `${messageId}.${ext}`;
+    const dir = path.join(process.env.WORKER ?? '', 'downloads');
+    const filePath = path.join(dir, fileName);
+
+    fs.mkdirSync(dir, { recursive: true });
+
+    try {
+      const url = `https://api-data.line.me/v2/bot/message/${messageId}/content`;
+      const res = await axios.get(url, {
+        headers: {
+          Authorization: `Bearer ${this.channelAccessToken}`,
         },
-      );
-      console.log('Reply result:', result.data);
-    } else {
-      console.warn('Unhandled message type:', message.type);
+        responseType: 'stream',
+      });
+
+      const writer = fs.createWriteStream(filePath);
+      res.data.pipe(writer);
+
+      await new Promise<void>((resolve, reject) => {
+        writer.on('finish', resolve);
+        writer.on('error', reject);
+      });
+
+      console.log(`檔案已儲存：${filePath}`);
+    } catch (error) {
+      console.error('下載失敗:', error);
     }
   }
 }
